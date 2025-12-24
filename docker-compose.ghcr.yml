@@ -1,0 +1,8 @@
+services:
+  nip85-provider:
+    image: ghcr.io/gringo/nip85_sp_first_created_at:main
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data

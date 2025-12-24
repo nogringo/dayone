@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 
-const db = new Database("pubkeys.db");
+const DB_PATH = process.env.DB_PATH || "pubkeys.db";
+const db = new Database(DB_PATH);
 
 // Initialize the database schema
 db.exec(`
