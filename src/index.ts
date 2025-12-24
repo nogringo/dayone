@@ -3,7 +3,7 @@ import WebSocket from "ws";
 import { useWebSocketImplementation, SimplePool } from "nostr-tools/pool";
 import { finalizeEvent } from "nostr-tools/pure";
 import { nip19 } from "nostr-tools";
-import { getPubkey, insertPubkey, updateFirstCreatedAt, getUnpublishedPubkeys, markPublished } from "./db.js";
+import { getPubkey, insertPubkey, updateFirstCreatedAt, markPublished } from "./db.js";
 
 useWebSocketImplementation(WebSocket);
 
@@ -49,57 +49,48 @@ console.log(`Will publish to ${PUBLISH_RELAYS.length} relays...`);
 console.log(`Monitoring event kinds: ${KINDS.join(", ")}`);
 
 /**
- * Handle incoming events - track pubkey first seen times
+ * Publish NIP-85 assertion for a pubkey
  */
-function handleEvent(event: { pubkey: string; created_at: number }) {
-  const now = Math.floor(Date.now() / 1000);
-  const existing = getPubkey(event.pubkey);
+async function publishAssertion(pubkey: string, firstCreatedAt: number, firstSeenAt: number) {
+  const event = finalizeEvent(
+    {
+      kind: 30382,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ["d", pubkey],
+        ["first_created_at", firstCreatedAt.toString()],
+        ["first_seen_at", firstSeenAt.toString()],
+      ],
+      content: "",
+    },
+    secretKey
+  );
 
-  if (!existing) {
-    // First time seeing this pubkey
-    insertPubkey(event.pubkey, event.created_at, now);
-    console.log(`New pubkey: ${event.pubkey.slice(0, 8)}... first_created_at=${event.created_at}`);
-  } else if (event.created_at < existing.first_created_at) {
-    // Found an older event from this pubkey
-    updateFirstCreatedAt(event.pubkey, event.created_at);
-    console.log(`Updated pubkey: ${event.pubkey.slice(0, 8)}... first_created_at=${event.created_at}`);
+  try {
+    await Promise.allSettled(pool.publish(PUBLISH_RELAYS, event));
+    markPublished(pubkey, Math.floor(Date.now() / 1000));
+    console.log(`Published assertion for ${pubkey.slice(0, 8)}...`);
+  } catch (error) {
+    console.error(`Failed to publish assertion for ${pubkey.slice(0, 8)}:`, error);
   }
 }
 
 /**
- * Publish NIP-85 assertion events for unpublished pubkeys
+ * Handle incoming events - track pubkey first seen times and publish immediately
  */
-async function publishAssertions() {
-  const unpublished = getUnpublishedPubkeys(100);
+async function handleEvent(event: { pubkey: string; created_at: number }) {
+  const now = Math.floor(Date.now() / 1000);
+  const existing = getPubkey(event.pubkey);
 
-  if (unpublished.length === 0) {
-    return;
-  }
-
-  console.log(`Publishing ${unpublished.length} assertions...`);
-
-  for (const record of unpublished) {
-    const event = finalizeEvent(
-      {
-        kind: 30382,
-        created_at: Math.floor(Date.now() / 1000),
-        tags: [
-          ["d", record.pubkey],
-          ["first_created_at", record.first_created_at.toString()],
-          ["first_seen_at", record.first_seen_at.toString()],
-        ],
-        content: "",
-      },
-      secretKey
-    );
-
-    try {
-      await Promise.allSettled(pool.publish(PUBLISH_RELAYS, event));
-      markPublished(record.pubkey, Math.floor(Date.now() / 1000));
-      console.log(`Published assertion for ${record.pubkey.slice(0, 8)}...`);
-    } catch (error) {
-      console.error(`Failed to publish assertion for ${record.pubkey.slice(0, 8)}:`, error);
-    }
+  if (!existing) {
+    // First time seeing this pubkey - insert and publish immediately
+    insertPubkey(event.pubkey, event.created_at, now);
+    console.log(`New pubkey: ${event.pubkey.slice(0, 8)}... first_created_at=${event.created_at}`);
+    await publishAssertion(event.pubkey, event.created_at, now);
+  } else if (event.created_at < existing.first_created_at) {
+    // Found an older event from this pubkey
+    updateFirstCreatedAt(event.pubkey, event.created_at);
+    console.log(`Updated pubkey: ${event.pubkey.slice(0, 8)}... first_created_at=${event.created_at}`);
   }
 }
 
@@ -119,12 +110,7 @@ const sub = pool.subscribe(
   }
 );
 
-// Publish assertions periodically
-const PUBLISH_INTERVAL = 60_000; // 1 minute
-setInterval(publishAssertions, PUBLISH_INTERVAL);
-
 console.log("Service started. Listening for events...");
-console.log(`Will publish assertions every ${PUBLISH_INTERVAL / 1000} seconds`);
 
 // Handle graceful shutdown
 process.on("SIGINT", () => {
