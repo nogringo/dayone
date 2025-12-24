@@ -1,9 +1,9 @@
 import "dotenv/config";
 import WebSocket from "ws";
 import { useWebSocketImplementation, SimplePool } from "nostr-tools/pool";
-import { finalizeEvent } from "nostr-tools/pure";
+import { finalizeEvent, getPublicKey } from "nostr-tools/pure";
 import { nip19 } from "nostr-tools";
-import { getPubkey, insertPubkey, updateFirstCreatedAt, markPublished } from "./db.js";
+import { getPubkey, cachePubkey, getCacheSize } from "./db.js";
 
 useWebSocketImplementation(WebSocket);
 
@@ -42,11 +42,47 @@ if (NSEC.startsWith("nsec")) {
   secretKey = Uint8Array.from(Buffer.from(NSEC, "hex"));
 }
 
+// Get our public key for querying our own assertions
+const ourPubkey = getPublicKey(secretKey);
+
 const pool = new SimplePool();
 
 console.log(`Connecting to ${RELAYS.length} relays...`);
 console.log(`Will publish to ${PUBLISH_RELAYS.length} relays...`);
 console.log(`Monitoring event kinds: ${KINDS.join(", ")}`);
+console.log(`Our pubkey: ${ourPubkey.slice(0, 8)}...`);
+
+/**
+ * Check if we have an assertion for this pubkey on relays
+ */
+async function fetchAssertionFromRelay(pubkey: string): Promise<{ first_created_at: number; first_seen_at: number } | null> {
+  try {
+    const event = await pool.get(
+      PUBLISH_RELAYS,
+      {
+        kinds: [30382],
+        authors: [ourPubkey],
+        "#d": [pubkey],
+      }
+    );
+
+    if (event) {
+      const firstCreatedAtTag = event.tags.find(t => t[0] === "first_created_at");
+      const firstSeenAtTag = event.tags.find(t => t[0] === "first_seen_at");
+
+      if (firstCreatedAtTag && firstSeenAtTag) {
+        return {
+          first_created_at: parseInt(firstCreatedAtTag[1], 10),
+          first_seen_at: parseInt(firstSeenAtTag[1], 10),
+        };
+      }
+    }
+  } catch (error) {
+    console.error(`Failed to fetch assertion for ${pubkey.slice(0, 8)}:`, error);
+  }
+
+  return null;
+}
 
 /**
  * Publish NIP-85 assertion for a pubkey
@@ -68,7 +104,6 @@ async function publishAssertion(pubkey: string, firstCreatedAt: number, firstSee
 
   try {
     await Promise.allSettled(pool.publish(PUBLISH_RELAYS, event));
-    markPublished(pubkey, Math.floor(Date.now() / 1000));
     console.log(`Published assertion for ${pubkey.slice(0, 8)}...`);
   } catch (error) {
     console.error(`Failed to publish assertion for ${pubkey.slice(0, 8)}:`, error);
@@ -76,21 +111,30 @@ async function publishAssertion(pubkey: string, firstCreatedAt: number, firstSee
 }
 
 /**
- * Handle incoming events - track pubkey first seen times and publish immediately
+ * Handle incoming events - cache-through pattern
  */
 async function handleEvent(event: { pubkey: string; created_at: number }) {
+  const { pubkey } = event;
   const now = Math.floor(Date.now() / 1000);
-  const existing = getPubkey(event.pubkey);
 
-  if (!existing) {
-    // First time seeing this pubkey - insert and publish immediately
-    insertPubkey(event.pubkey, event.created_at, now);
-    console.log(`New pubkey: ${event.pubkey.slice(0, 8)}... first_created_at=${event.created_at}`);
-    await publishAssertion(event.pubkey, event.created_at, now);
-  } else if (event.created_at < existing.first_created_at) {
-    // Found an older event from this pubkey
-    updateFirstCreatedAt(event.pubkey, event.created_at);
-    console.log(`Updated pubkey: ${event.pubkey.slice(0, 8)}... first_created_at=${event.created_at}`);
+  // 1. Check local cache
+  const cached = getPubkey(pubkey);
+  if (cached) {
+    return; // Already known
+  }
+
+  // 2. Cache miss - check relays for existing assertion
+  const existing = await fetchAssertionFromRelay(pubkey);
+
+  if (existing) {
+    // 3. Found on relay - add to cache, don't republish
+    cachePubkey(pubkey, existing.first_created_at, existing.first_seen_at);
+    console.log(`Cached from relay: ${pubkey.slice(0, 8)}... (cache: ${getCacheSize()})`);
+  } else {
+    // 4. Not on relay - publish new assertion and cache
+    cachePubkey(pubkey, event.created_at, now);
+    await publishAssertion(pubkey, event.created_at, now);
+    console.log(`New pubkey: ${pubkey.slice(0, 8)}... (cache: ${getCacheSize()})`);
   }
 }
 
