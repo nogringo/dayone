@@ -1,4 +1,4 @@
-# NIP-85 Service Provider: first_created_at
+# Dayone
 
 A Nostr service provider that monitors relays for new pubkeys and publishes NIP-85 Trusted Assertion events with `first_created_at` timestamps.
 

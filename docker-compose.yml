@@ -1,5 +1,5 @@
 services:
-  nip85-provider:
+  dayone:
     build: .
     restart: unless-stopped
     env_file:

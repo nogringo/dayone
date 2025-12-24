@@ -1,7 +1,7 @@
 {
-  "name": "nip85-sp-first-created-at",
+  "name": "dayone",
   "version": "1.0.0",
-  "description": "NIP-85 Service Provider for first_created_at assertions",
+  "description": "NIP-85 service provider tracking when Nostr accounts first appeared",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -15,6 +15,10 @@
     "web-of-trust"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nogringo/dayone"
+  },
   "dependencies": {
     "better-sqlite3": "^12.5.0",
     "dotenv": "^17.2.3",

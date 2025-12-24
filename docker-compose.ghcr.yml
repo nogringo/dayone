@@ -1,6 +1,6 @@
 services:
-  nip85-provider:
-    image: ghcr.io/gringo/nip85_sp_first_created_at:main
+  dayone:
+    image: ghcr.io/nogringo/dayone:main
     restart: unless-stopped
     env_file:
       - .env
